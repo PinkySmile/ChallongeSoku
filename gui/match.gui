@@ -1,0 +1,139 @@
+Renderer.1 {
+    backgroundcolor = transparent;
+    bordercolor = #3C3C3C;
+    borders = (0, 0, 0, 0);
+    textcolor = #3C3C3C;
+    texturebackground = None;
+}
+
+Renderer.2 {
+    backgroundcolor = white;
+    bordercolor = black;
+    borders = (1, 0, 0, 0);
+    caretcolor = black;
+    caretwidth = 1;
+    defaulttextcolor = #A0A0A0;
+    padding = (1, 0, 0, 0);
+    selectedtextbackgroundcolor = #006EFF;
+    selectedtextcolor = white;
+    textcolor = #3C3C3C;
+    texturebackground = None;
+}
+
+Panel.TopPanel {
+    Position = (20, 0);
+    Size = (180, 20);
+
+    Renderer {
+        backgroundcolor = white;
+        bordercolor = black;
+        borders = (1, 1, 1, 0);
+        texturebackground = None;
+    }
+
+    Picture.ProfilePic {
+        Position = (1, 1);
+        Size = (17, 17);
+
+        Renderer {
+            texture = None;
+            transparenttexture = false;
+        }
+    }
+
+    Label.Username {
+        Position = (20, 0);
+        ScrollbarPolicy = Never;
+        Size = (137.2, 19);
+        Text = "Top Challenger";
+        TextSize = 13;
+        VerticalAlignment = Center;
+        renderer = &1;
+    }
+
+    TextBox.TextBox {
+        Enabled = false;
+        HorizontalScrollbarPolicy = Never;
+        MaximumCharacters = 0;
+        Position = (155, 0);
+        Size = (25, 21);
+        Text = "";
+        TextSize = 13;
+        renderer = &2;
+    }
+
+    Label.Score {
+        HorizontalAlignment = Center;
+        Position = (155, 0);
+        ScrollbarPolicy = Never;
+        Size = (25, 19);
+        Text = "-1";
+        TextSize = 13;
+        VerticalAlignment = Center;
+        renderer = &1;
+    }
+}
+
+Panel.BottomPanel {
+    Position = (20, 20);
+    Size = (180, 21);
+
+    Renderer {
+        backgroundcolor = white;
+        bordercolor = black;
+        borders = (1, 1, 1, 1);
+        texturebackground = None;
+    }
+
+    Picture.ProfilePic {
+        Position = (1, 1);
+        Size = (17, 17);
+
+        Renderer {
+            texture = None;
+            transparenttexture = false;
+        }
+    }
+
+    Label.Username {
+        Position = (20, 0);
+        ScrollbarPolicy = Never;
+        Size = (137.2, 19);
+        Text = "Bottom Challenger";
+        TextSize = 13;
+        VerticalAlignment = Center;
+        renderer = &1;
+    }
+
+    TextBox.TextBox {
+        Enabled = false;
+        HorizontalScrollbarPolicy = Never;
+        MaximumCharacters = 0;
+        Position = (155, 0);
+        Size = (25, 21);
+        Text = "";
+        TextSize = 13;
+        renderer = &2;
+    }
+
+    Label.Score {
+        HorizontalAlignment = Center;
+        Position = (155, 0);
+        ScrollbarPolicy = Never;
+        Size = (25, 19);
+        Text = "-1";
+        TextSize = 13;
+        VerticalAlignment = Center;
+        renderer = &1;
+    }
+}
+
+Label.ID {
+    HorizontalAlignment = Center;
+    ScrollbarPolicy = Never;
+    Size = (20, 39);
+    Text = "-1";
+    TextSize = 13;
+    VerticalAlignment = Center;
+    renderer = &1;
+}

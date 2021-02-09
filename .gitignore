@@ -1,0 +1,15 @@
+desktop.ini
+*.log
+*.autosave
+*.o
+*.a
+*.dat
+*.res
+*.lnk
+*.sav
+*.dll
+*.npp
+save
+*.exe
+cmake-build*
+.idea

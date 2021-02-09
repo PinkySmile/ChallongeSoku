@@ -1,0 +1,93 @@
+Renderer.1 {
+    backgroundcolor = transparent;
+    bordercolor = #3C3C3C;
+    borders = (0, 0, 0, 0);
+    textcolor = #3C3C3C;
+    texturebackground = None;
+}
+
+MenuBar.MenuBar {
+    MinimumSubMenuWidth = 125;
+    Size = (&.size, 20);
+    TextSize = 13;
+
+    Renderer {
+        backgroundcolor = #D8D8D8;
+        distancetoside = 4;
+        selectedbackgroundcolor = #006EFF;
+        selectedtextcolor = white;
+        textcolor = black;
+        textcolordisabled = #7D7D7D;
+    }
+
+    Menu {
+        Items = ["Open Challonge tournament"];
+        Text = Tournament;
+    }
+
+    Menu {
+        Items = [Settings];
+        Text = Edit;
+    }
+}
+
+Label.Score {
+    Position = (10, 30);
+    ScrollbarPolicy = Never;
+    Size = (429.2, 18);
+    Text = "No tournament loaded";
+    TextSize = 13;
+    renderer = &1;
+}
+
+ScrollablePanel.Bracket {
+    ContentSize = (0, 0);
+    Position = (10, 50);
+    Size = (&.w - 20, &.h - 100);
+
+    Renderer {
+        backgroundcolor = #CCCCCC;
+        bordercolor = black;
+        texturebackground = None;
+    }
+}
+
+Label.Refresh {
+    HorizontalAlignment = Right;
+    Position = ((&.w - w) - 10, 30);
+    ScrollbarPolicy = Never;
+    Size = (177.2, 18);
+    Text = "Refreshing in 10 seconds";
+    TextSize = 13;
+    renderer = &1;
+}
+
+Label.Warning {
+    Position = (10, bracket.h + bracket.y);
+    ScrollbarPolicy = Never;
+    Size = ((&.w / 2) - 10, (&.h - y) - 10);
+    TextSize = 13;
+
+    Renderer {
+        backgroundcolor = transparent;
+        bordercolor = #3C3C3C;
+        borders = (0, 0, 0, 0);
+        textcolor = #FF8800;
+        texturebackground = None;
+    }
+}
+
+Label.ChallongeWarning {
+    Position = (&.w / 2, bracket.h + bracket.y);
+    ScrollbarPolicy = Never;
+    Size = ((&.w / 2) - 10, (&.h - y) - 10);
+    TextSize = 13;
+
+    Renderer {
+        backgroundcolor = transparent;
+        bordercolor = #3C3C3C;
+        borders = (0, 0, 0, 0);
+        textcolor = #FF8800;
+        texturebackground = None;
+    }
+}

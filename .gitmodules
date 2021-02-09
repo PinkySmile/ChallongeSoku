@@ -1,0 +1,3 @@
+[submodule "ChallongeLib"]
+	path = ChallongeLib
+	url = https://github.com/Gegel85/ChallongeLib
