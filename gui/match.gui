@@ -137,3 +137,31 @@ Label.ID {
     VerticalAlignment = Center;
     renderer = &1;
 }
+
+Button.JoinButton {
+    Enabled = false;
+    Size = (200, 41);
+    TextSize = 13;
+
+    Renderer {
+        backgroundcolor = transparent;
+        backgroundcolordisabled = transparent;
+        backgroundcolordown = #AAAAAAAA;
+        backgroundcolorhover = #AAAAAA88;
+        bordercolor = #3C3C3C;
+        bordercolordisabled = black;
+        bordercolordown = black;
+        bordercolorfocused = black;
+        bordercolorhover = black;
+        borders = (1, 1, 1, 1);
+        textcolor = #3C3C3C;
+        textcolordisabled = #7D7D7D;
+        textcolordown = black;
+        textcolorhover = black;
+        texture = None;
+        texturedisabled = None;
+        texturedown = None;
+        texturefocused = None;
+        texturehover = None;
+    }
+}

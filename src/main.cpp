@@ -23,6 +23,53 @@
 #endif
 
 using namespace ChallongeSoku;
+using namespace ChallongeAPI;
+
+struct KonniMatch {
+	bool autopunch;
+	std::string clientChallonge;
+	std::string clientCharacter;
+	std::string clientCountry;
+	std::string clientName;
+	std::string hostChallonge;
+	std::string hostCharacter;
+	std::string hostCountry;
+	std::string hostName;
+	std::string ip;
+	unsigned short port;
+	std::string message;
+	bool ranked;
+	bool spectatable;
+	unsigned spectators;
+	time_t start;
+	bool gameStarted;
+
+	KonniMatch() = default;
+	KonniMatch(const nlohmann::json &value) {
+		getFromJson(this->autopunch,       "autopunch", value);
+		getFromJson(this->clientChallonge, "client_challonge", value);
+		getFromJson(this->clientCharacter, "client_character", value);
+		getFromJson(this->clientCountry,   "client_country", value);
+		getFromJson(this->clientName,      "client_name", value);
+		getFromJson(this->hostChallonge,   "host_challonge", value);
+		getFromJson(this->hostCharacter,   "host_character", value);
+		getFromJson(this->hostCountry,     "host_country", value);
+		getFromJson(this->hostName,        "host_name", value);
+		getFromJson(this->ip,              "ip", value);
+		getFromJson(this->message,         "message", value);
+		getFromJson(this->ranked,          "ranked", value);
+		getFromJson(this->spectatable,     "spectatable", value);
+		getFromJson(this->spectators,      "spectators", value);
+		getFromJson(this->start,           "start", value);
+		getFromJson(this->gameStarted,     "started", value);
+
+		size_t portPos = this->ip.find(':');
+
+		this->port = std::stoul(this->ip.substr(portPos + 1));
+		this->ip = this->ip.substr(0, portPos);
+	}
+	KonniMatch& operator=(const nlohmann::json &value);
+};
 
 struct ChallongeWSock {
 	SecuredWebSocket socket;
@@ -46,7 +93,7 @@ struct Settings {
 	std::map<std::string, std::string> roundNames;
 };
 
-typedef std::vector<std::shared_ptr<ChallongeAPI::Match>> Round;
+typedef std::vector<std::shared_ptr<Match>> Round;
 typedef std::vector<Round> RobinBracket;
 typedef std::map<int, Round> ElimBracket;
 
@@ -55,7 +102,7 @@ struct Bracket {
 	ElimBracket elim;
 	RobinBracket robbin;
 	std::pair<int, int> roundBounds;
-	std::shared_ptr<ChallongeAPI::Match> last;
+	std::shared_ptr<Match> last;
 };
 
 typedef std::map<size_t, Bracket> Pool;
@@ -70,15 +117,18 @@ struct State {
 	Settings settings;
 	std::string currentTournament;
 	std::thread stateUpdateThread;
-	std::map<size_t, std::string> matchesStates;
-	std::shared_ptr<ChallongeAPI::Tournament> tournament;
-	std::map<size_t, std::shared_ptr<ChallongeAPI::Match>> matches;
-	std::map<size_t, std::shared_ptr<ChallongeAPI::Participant>> participants;
+	std::map<size_t, KonniMatch> matchesStates;
+	std::shared_ptr<Tournament> tournament;
+	std::map<size_t, std::shared_ptr<Match>> matches;
+	std::map<std::string, size_t> discordHostToParticipant;
+	std::map<size_t, std::shared_ptr<Participant>> participants;
+	std::map<std::string, std::shared_ptr<Participant>> ChallongeUNameToParticipant;
 	Pool group;
 	Bracket bracket;
 	bool displayMutex;
+	bool updateMutex;
 
-	ChallongeAPI::Client client;
+	Client client;
 	sf::Texture defaultTexture;
 	std::map<std::string, sf::Texture> images;
 };
@@ -167,23 +217,33 @@ void updateTournamentState(State &state, nlohmann::json wsockPayload)
 {
 	for (auto &round : wsockPayload["matches_by_round"].items()) {
 		for (auto &match : round.value()) {
-			auto it = state.matches.find(match["id"]);
+			try {
+				if (!match.contains("id") || match["id"].is_null())
+					continue;
 
-			if (it != state.matches.end()) {
-				auto &obj = it->second;
+				auto it = state.matches.find(match["id"]);
 
-				ChallongeAPI::getFromJson(obj->_forfeited, "forfeited", match);
-				ChallongeAPI::getFromJson(obj->_loserId,   "loser_id", match);
-				ChallongeAPI::getFromJson(obj->_winnerId,  "winner_id", match);
-				ChallongeAPI::getFromJson(obj->_player1Id, "id", match["player1"]);
-				ChallongeAPI::getFromJson(obj->_player2Id, "id", match["player2"]);
-				ChallongeAPI::getFromJson(obj->_state,     "state", match);
-				ChallongeAPI::getFromJson(obj->_scores,    "scores", match);
-			} else {
-				std::cerr << match.dump(4) << " ignored" << std::endl;
+				if (it != state.matches.end()) {
+					auto &obj = it->second;
+
+					getFromJson(obj->_forfeited, "forfeited", match);
+					getFromJson(obj->_loserId, "loser_id", match);
+					getFromJson(obj->_winnerId, "winner_id", match);
+					getFromJson(obj->_player1Id, "id", match["player1"]);
+					getFromJson(obj->_player2Id, "id", match["player2"]);
+					getFromJson(obj->_state, "state", match);
+					getFromJson(obj->_scores, "scores", match);
+				} else {
+					std::cerr << match.dump(4) << " ignored" << std::endl;
+				}
+			} catch (std::exception &e) {
+				std::cerr << "Error updating match " << match << std::endl;
+				std::cerr << e.what() << std::endl;
 			}
 		}
 	}
+	for (auto &elem : wsockPayload["groups"])
+		updateTournamentState(state, elem);
 }
 
 sf::Texture &getTexture(State &state, const std::string &link)
@@ -193,9 +253,9 @@ sf::Texture &getTexture(State &state, const std::string &link)
 			return state.images[link];
 
 		sf::Image image;
-		ChallongeAPI::SecuredSocket socket;
+		SecuredSocket socket;
 		auto tmp = link.substr(link.find("//") + 2);
-		ChallongeAPI::Socket::HttpRequest request;
+		Socket::HttpRequest request;
 
 		request.host = tmp.substr(0, tmp.find('/'));
 		if (tmp.find('/') == std::string::npos)
@@ -220,13 +280,13 @@ sf::Texture &getTexture(State &state, const std::string &link)
 		}
 		state.images[link].loadFromImage(image);
 		return state.images[link];
-	} catch (ChallongeAPI::NetworkException &e) {
+	} catch (NetworkException &e) {
 		std::cerr << link << ": " << e.what() << std::endl;
 		return state.defaultTexture;
 	}
 }
 
-void updateMatchSidePanel(State &state, tgui::Panel::Ptr pan, const ChallongeAPI::Match &match, bool player1)
+void updateMatchSidePanel(State &state, tgui::Panel::Ptr pan, const Match &match, bool player1)
 {
 	auto &scores = match.getScores();
 	auto prerequ = player1 ? match.isPlayer1IsPrereqMatchLoser() : match.isPlayer2IsPrereqMatchLoser();
@@ -240,17 +300,22 @@ void updateMatchSidePanel(State &state, tgui::Panel::Ptr pan, const ChallongeAPI
 	auto picture = pan->get<tgui::Picture>("ProfilePic");
 	auto scoreLabel = pan->get<tgui::Label>("Score");
 
-	auto other = otherId ? state.matches[*otherId] : std::optional<std::shared_ptr<ChallongeAPI::Match>>{};
-	auto participant = playerId ? state.participants[*playerId] : std::optional<std::shared_ptr<ChallongeAPI::Participant>>{};
+	auto other = otherId ? state.matches[*otherId] : std::optional<std::shared_ptr<Match>>{};
+	auto participant = playerId ? state.participants[*playerId] : std::optional<std::shared_ptr<Participant>>{};
 	auto isWinner = playerId && match.getWinnerId() && match.getWinnerId() == playerId;
 	auto isLoser = playerId && match.getLoserId() && match.getLoserId() == playerId;
 
 	auto replacementStr = (prerequ ? "Loser of " : "Winner of ") + (other ? std::to_string((*other)->getSuggestedPlayOrder()) : "");
+	std::optional<sf::Texture> texture;
 
+	if (participant && *participant && (*participant)->getAttachedParticipatablePortraitUrl())
+		texture = getTexture(state, *(*participant)->getAttachedParticipatablePortraitUrl());
+
+	lockMutex(state.displayMutex);
 	if (participant) {
 		if (*participant) {
-			if ((*participant)->getAttachedParticipatablePortraitUrl())
-				picture->getRenderer()->setTexture(getTexture(state, *(*participant)->getAttachedParticipatablePortraitUrl()));
+			if (texture)
+				picture->getRenderer()->setTexture(*texture);
 			username->setText((*participant)->getName());
 			username->getRenderer()->setTextColor("black");
 		} else {
@@ -261,15 +326,22 @@ void updateMatchSidePanel(State &state, tgui::Panel::Ptr pan, const ChallongeAPI
 		username->setText(replacementStr);
 		username->getRenderer()->setTextColor("#AAAAAA");
 	}
-	textbox->getRenderer()->setBackgroundColor(
-		isLoser ? state.settings.loserColor :
-		(isWinner ? state.settings.winnerColor : state.settings.noStartedColor)
-	);
+
+	tgui::Color color = state.settings.noStartedColor;
+
+	if (isLoser)
+		color = state.settings.loserColor;
+	else if (isWinner)
+		color = state.settings.winnerColor;
+
+	textbox->getRenderer()->setBackgroundColor(color);
 	scoreLabel->setText(score ? std::to_string(*score) : "-");
+	state.displayMutex = false;
 }
 
 void updateBracketState(State &state, bool hasThread = true)
 {
+	lockMutex(state.updateMutex);
 	if (state.updateBracketThread.joinable() && hasThread)
 		state.updateBracketThread.join();
 
@@ -279,10 +351,93 @@ void updateBracketState(State &state, bool hasThread = true)
 			auto pan = state.gui.get<tgui::Panel>("Match" + std::to_string(match.first));
 			auto top = pan->get<tgui::Panel>("TopPanel");
 			auto bot = pan->get<tgui::Panel>("BottomPanel");
+			auto but = pan->get<tgui::Button>("JoinButton");
+			tgui::Color color = state.settings.noStartedColor;
+			auto it = state.matchesStates.find(match.second->getId());
 
+			if (it != state.matchesStates.end()) {
+				auto &host = it->second;
+
+				color = host.gameStarted ? state.settings.playingColor : state.settings.hostingColor;
+				but->disconnectAll("Clicked");
+				but->connect("Clicked", [match, host, &state]{
+					Socket sock;
+					Socket::HttpRequest requ;
+					auto player1Id = match.second->getPlayer1Id();
+					auto player2Id = match.second->getPlayer2Id();
+					auto participant1 = player1Id ? state.participants[*player1Id] : std::optional<std::shared_ptr<Participant>>{};
+					auto participant2 = player2Id ? state.participants[*player2Id] : std::optional<std::shared_ptr<Participant>>{};
+
+					if (!participant1 || !participant2)
+						return openMsgBox(
+							state,
+							"Connect error",
+							"Cannot connect to a match that doesn't have 2 participants.\nThis is a bug. Please report this to the tool developer.",
+							MB_ICONERROR
+						);
+
+					requ.portno = state.settings.ssport;
+					requ.host = state.settings.sshost;
+					requ.httpVer = "HTTP/1.1";
+					requ.method = "POST";
+					requ.path = "/state";
+
+					requ.body.reserve(
+						strlen(R"({"left":{"name":"","score":0},{"right":{"name":"","score":0}})") +
+						(*participant1)->getDisplayName().size() + (*participant2)->getDisplayName().size()
+					);
+					requ.body += R"({"left":{"score":0,"name":")";
+					requ.body += (*participant1)->getDisplayName();
+					requ.body += R"("},"right":{"score":0,"name":")";
+					requ.body += (*participant2)->getDisplayName();
+					requ.body += R"("}})";
+
+					try {
+						sock.makeHttpRequest(requ);
+					} catch (std::exception &e) {
+						openMsgBox(state, "State error", "Cannot set state: " + std::string(e.what()) + "\nThis is a bug. Please report this to the tool developer.", MB_ICONERROR);
+						std::cerr << Socket::generateHttpRequest(requ) << std::endl;
+						std::cerr << Utils::getLastExceptionName() << std::endl;
+						std::cerr << "\t" << e.what() << std::endl;
+						return;
+					}
+
+					requ.path = "/connect";
+					requ.body.reserve(strlen(R"({"ip":"","port":65535,"spec":true})") + host.ip.size());
+					requ.body = R"({"ip":")";
+					requ.body += host.ip;
+					requ.body += R"(","port":)";
+					requ.body += std::to_string(host.port);
+					requ.body += R"(,"spec":true})";
+
+					try {
+						sock.makeHttpRequest(requ);
+					} catch (HTTPErrorException &e) {
+						if (e.getResponse().returnCode == 503) {
+							openMsgBox(state, "Connect error", "Cannot connect to host: " + std::string(e.what()) + "\nPlease stop connecting/hosting before trying to connect.", MB_ICONERROR);
+							return;
+						}
+						openMsgBox(state, "Connect error", "Cannot connect to host: " + std::string(e.what()) + "\nThis is a bug. Please report this to the tool developer.", MB_ICONERROR);
+						std::cerr << Socket::generateHttpRequest(requ) << std::endl;
+						std::cerr << Utils::getLastExceptionName() << std::endl;
+						std::cerr << "\t" << e.what() << std::endl;
+					} catch (std::exception &e) {
+						openMsgBox(state, "Connect error", "Cannot connect to host: " + std::string(e.what()) + "\nThis is a bug. Please report this to the tool developer.", MB_ICONERROR);
+						std::cerr << Socket::generateHttpRequest(requ) << std::endl;
+						std::cerr << Utils::getLastExceptionName() << std::endl;
+						std::cerr << "\t" << e.what() << std::endl;
+					}
+				});
+				but->setEnabled(true);
+			} else
+				but->setEnabled(false);
 			updateMatchSidePanel(state, top, *match.second, true);
 			updateMatchSidePanel(state, bot, *match.second, false);
+			lockMutex(state.displayMutex);
+			pan->getRenderer()->setBackgroundColor(color);
+			state.displayMutex = false;
 		}
+		state.updateMutex = false;
 	};
 
 	std::cout << "Updating bracket state" << std::endl;
@@ -292,7 +447,7 @@ void updateBracketState(State &state, bool hasThread = true)
 		fct();
 }
 //TODO: https://hisouten.challonge.com/fr/soku2020
-tgui::Panel::Ptr addMatch(const ChallongeAPI::Match &match, tgui::Layout2d pos, tgui::Panel::Ptr panel)
+tgui::Panel::Ptr addMatch(const Match &match, tgui::Layout2d pos, tgui::Panel::Ptr panel)
 {
 	static std::shared_ptr<tgui::Panel> panBase = nullptr;
 
@@ -493,8 +648,8 @@ void buildBracketTree(State &state)
 
 void connectToWebsocket(ChallongeWSock &wsock)
 {
-	ChallongeAPI::SecuredSocket sock;
-	ChallongeAPI::Socket::HttpRequest requ;
+	SecuredSocket sock;
+	Socket::HttpRequest requ;
 
 	requ.host = "stream.challonge.com";
 	requ.portno = 8000;
@@ -512,7 +667,7 @@ void connectToWebsocket(ChallongeWSock &wsock)
 	sendWebSocketMessage(wsock, "/meta/connect", {{"connectionType", "websocket"}});
 }
 
-inline void addMatchToBracket(const std::shared_ptr<ChallongeAPI::Match> &match, Bracket &bracket)
+inline void addMatchToBracket(const std::shared_ptr<Match> &match, Bracket &bracket)
 {
 	bracket.elim[match->getRound()].push_back(match);
 	if (match->getRound() < 0)
@@ -522,7 +677,7 @@ inline void addMatchToBracket(const std::shared_ptr<ChallongeAPI::Match> &match,
 	bracket.robbin[match->getRound() - 1].push_back(match);
 }
 
-inline void addMatchToPool(const std::shared_ptr<ChallongeAPI::Match> &match, Pool &pool)
+inline void addMatchToPool(const std::shared_ptr<Match> &match, Pool &pool)
 {
 	addMatchToBracket(match, pool[*match->getGroupId()]);
 }
@@ -555,7 +710,7 @@ std::string getGroupStageType(State &state, const Pool &pools)
 	return "round robbin";
 }
 
-void loadChallongeTournament(State &state, const std::string &url, bool noObjectRefresh = false)
+void loadChallongeTournament(State &state, std::string url, bool noObjectRefresh = false)
 {
 	state.currentTournament.clear();
 	if (state.wsock.socket.isOpen())
@@ -573,7 +728,7 @@ void loadChallongeTournament(State &state, const std::string &url, bool noObject
 		}
 		std::cout << "Tournament type is " << state.tournament->getTournamentType() << std::endl;
 		if (state.tournament->getTournamentType() == "swiss")
-			throw ChallongeAPI::NotImplementedException("Swiss tournaments are not yet implemented. Sorry....");
+			throw NotImplementedException("Swiss tournaments are not yet implemented. Sorry....");
 		if (state.tournament->getGameName() != "Touhou Hisoutensoku")
 			openMsgBox(
 				state,
@@ -611,11 +766,11 @@ void loadChallongeTournament(State &state, const std::string &url, bool noObject
 							updateBracketState(state);
 						}
 					}
-				} catch (ChallongeAPI::ConnectionTerminatedException &e) {
+				} catch (ConnectionTerminatedException &e) {
 					return;
-				} catch (ChallongeAPI::EOFException &e) {
+				} catch (EOFException &e) {
 					if (state.wsock.socket.isOpen())
-						openMsgBox(state, "Websocket error: ChallongeAPI::EOFException", e.what(), MB_ICONERROR);
+						openMsgBox(state, "Websocket error: EOFException", e.what(), MB_ICONERROR);
 					return;
 				} catch (std::exception &e) {
 					openMsgBox(state, "Websocket error: " + Utils::getLastExceptionName(), e.what(), MB_ICONERROR);
@@ -634,6 +789,8 @@ void loadChallongeTournament(State &state, const std::string &url, bool noObject
 
 		for (auto &participant : state.tournament->getParticipants()) {
 			state.participants[participant->getId()] = participant;
+			if (participant->getChallongeUsername())
+				state.ChallongeUNameToParticipant[*participant->getChallongeUsername()] = participant;
 			for (auto &alt : participant->getGroupPlayerIds())
 				state.participants[alt] = participant;
 		}
@@ -644,8 +801,7 @@ void loadChallongeTournament(State &state, const std::string &url, bool noObject
 			std::cout << match->getId() << std::endl;
 			std::cout << (match->getGroupId() ? std::to_string(*match->getGroupId()) : "None") << std::endl;
 			std::cout << match->getState() << std::endl;
-			std::cout << match->getRound() << ":" << match->getSuggestedPlayOrder() << std::endl
-				  << std::endl;
+			std::cout << match->getRound() << ":" << match->getSuggestedPlayOrder() << std::endl << std::endl;
 
 			if (match->getGroupId())
 				addMatchToPool(match, state.group);
@@ -660,9 +816,11 @@ void loadChallongeTournament(State &state, const std::string &url, bool noObject
 		std::cout << "Building bracket tree GUI" << std::endl;
 		buildBracketTree(state);
 		std::cout << "Done" << std::endl;
-		state.currentTournament = url;
-		score->setText(state.tournament->getName());
-		score->getRenderer()->setTextColor("black");
+		if (!noObjectRefresh) {
+			state.currentTournament = url;
+			score->setText(state.tournament->getName());
+			score->getRenderer()->setTextColor("black");
+		}
 	};
 
 	if (state.updateBracketThread.joinable())
@@ -670,19 +828,72 @@ void loadChallongeTournament(State &state, const std::string &url, bool noObject
 	state.updateBracketThread = std::thread(fct);
 }
 
+bool konniHostIsChallongeMatch(State &state, const Match &match, const KonniMatch &host)
+{
+	auto hostP   = state.ChallongeUNameToParticipant[host.hostChallonge]   ?: state.participants[state.discordHostToParticipant[host.hostName]];
+	auto clientP = state.ChallongeUNameToParticipant[host.clientChallonge] ?: state.participants[state.discordHostToParticipant[host.clientName]];
+	auto p1      = state.participants[*match.getPlayer1Id()];
+	auto p2      = state.participants[*match.getPlayer2Id()];
+
+	return p1 == hostP && (!host.gameStarted || p2 == clientP);
+}
+
+bool matchKonniHostWithChallongeMatch(State &state, const Match &match, const KonniMatch &host, const std::map<size_t, KonniMatch> &old)
+{
+	auto it = old.find(match.getId());
+
+	if (match.getState() != "open")
+		return false;
+	if (it != old.end() && it->second.hostChallonge == host.hostChallonge) {
+		state.matchesStates[match.getId()] = host;
+		return true;
+	}
+	if (!match.getPlayer1Id() && !match.getPlayer2Id())
+		return false;
+	if (!konniHostIsChallongeMatch(state, match, host))
+		return false;
+
+	state.matchesStates[match.getId()] = host;
+	return true;
+}
+
+bool matchKonniHostWithChallongeMatchInBracket(State &state, const Bracket &bracket, const KonniMatch &host, const std::map<size_t, KonniMatch> &old)
+{
+	for (auto &round : bracket.robbin)
+		for (auto &match : round)
+			if (matchKonniHostWithChallongeMatch(state, *match, host, old))
+				return true;
+	for (auto &round : bracket.elim)
+		for (auto &match : round.second)
+			if (matchKonniHostWithChallongeMatch(state, *match, host, old))
+				return true;
+	return false;
+}
+
+void matchKonniHostsWithChallongeMatch(State &state, const std::vector<KonniMatch> &hosts)
+{
+	auto oldStates = state.matchesStates;
+
+	state.matchesStates.clear();
+	if (state.bracket.elim.empty() && state.bracket.robbin.empty()) {
+		for (auto &host : hosts)
+			for (auto &bracket : state.group)
+				if (matchKonniHostWithChallongeMatchInBracket(state, bracket.second, host, oldStates))
+					break;
+	} else
+		for (auto &host : hosts)
+			matchKonniHostWithChallongeMatchInBracket(state, state.bracket, host, oldStates);
+}
+
 void refreshView(State &state)
 {
-	if (state.stateUpdateThread.joinable())
-		state.stateUpdateThread.join();
-	state.countdown.restart();
-	state.stateUpdateThread = std::thread([&state]{
-		ChallongeAPI::Socket sock;
+	auto fct = [&state]{
+		Socket sock;
+		Socket::HttpRequest requ;
 		auto score = state.gui.get<tgui::Label>("Warning");
 		auto chw = state.gui.get<tgui::Label>("ChallongeWarning");
 
 		try {
-			ChallongeAPI::Socket::HttpRequest requ;
-
 			requ.portno = state.settings.ssport;
 			requ.host = state.settings.sshost;
 			requ.httpVer = "HTTP/1.1";
@@ -691,23 +902,30 @@ void refreshView(State &state)
 
 			auto res = sock.makeHttpRequest(requ);
 
+			lockMutex(state.displayMutex);
 			score->getRenderer()->setTextColor("#FF8800");
 			score->setText("Warning: Invalid SokuStreaming version: GET to /connect returned " + std::to_string(res.returnCode) + " " + res.codeName);
-		} catch (ChallongeAPI::HTTPErrorException &e) {
+			state.displayMutex = false;
+		} catch (HTTPErrorException &e) {
+			lockMutex(state.displayMutex);
 			switch (e.getResponse().returnCode) {
 			case 404:
 				score->getRenderer()->setTextColor("#FF8800");
-				return score->setText("Warning: Invalid SokuStreaming version: GET to /connect returned 404 " + e.getResponse().codeName);
+				score->setText("Warning: Invalid SokuStreaming version: GET to /connect returned 404 " + e.getResponse().codeName);
+				break;
 			case 403:
 				score->getRenderer()->setTextColor("#FF8800");
-				return score->setText("Warning: SokuStreaming refused access to /connect: " + e.getResponse().codeName);
+				score->setText("Warning: SokuStreaming refused access to /connect: " + e.getResponse().codeName);
+				break;
 			case 405:
 				score->getRenderer()->setTextColor("green");
-				return score->setText("SokuStreaming works");
+				score->setText("SokuStreaming works");
+				break;
 			default:
 				score->getRenderer()->setTextColor("#FF8800");
 				score->setText("Warning: Invalid SokuStreaming version: GET to /connect returned " + std::to_string(e.getResponse().returnCode) + " " + e.getResponse().codeName);
 			}
+			state.displayMutex = false;
 		} catch (std::exception &e) {
 			std::cerr << e.what() << std::endl;
 			score->getRenderer()->setTextColor("red");
@@ -716,16 +934,64 @@ void refreshView(State &state)
 
 		if (state.currentTournament.empty())
 			return;
-		try {
-			auto oldState = state.tournament;
 
+		auto oldState = state.tournament;
+
+		lockMutex(state.displayMutex);
+		chw->setText("");
+		state.displayMutex = false;
+		try {
 			state.tournament = state.client.getTournamentByName(state.currentTournament);
 			if (oldState->getMatches().size() != state.tournament->getMatches().size())
-				loadChallongeTournament(state, state.currentTournament, false);
+				loadChallongeTournament(state, state.currentTournament, true);
 		} catch (std::exception &e) {
+			std::cerr << e.what() << std::endl;
+			lockMutex(state.displayMutex);
 			chw->setText("Cannot refresh tournament: " + std::string(e.what()));
-			return;
+			state.displayMutex = false;
 		}
+
+		try {
+			requ.portno = 14762;
+			requ.host = "delthas.fr";
+			requ.httpVer = "HTTP/1.1";
+			requ.method = "GET";
+			requ.path = "/games?tourney=" + state.currentTournament;
+
+			auto res = sock.makeHttpRequest(requ);
+			auto j = nlohmann::json::parse(res.body);
+			std::vector<KonniMatch> matches;
+
+			matches.reserve(j.size());
+			for (auto &e : j)
+				matches.emplace_back(e);
+			matchKonniHostsWithChallongeMatch(state, matches);
+			updateBracketState(state, false);
+		} catch (HTTPErrorException &e) {
+			lockMutex(state.displayMutex);
+			switch (e.getResponse().returnCode) {
+			case 404:
+				if (oldState->getMatches().empty() != state.tournament->getMatches().empty())
+					openMsgBox(state, "Discord tournament not started", "Warning: Requesting games to Konni returned 404. Are you sure you linked the tournament with your discord server using the same URL ?", MB_ICONWARNING);
+				chw->setText("Cannot refresh games: Tournament hasn't been linked with Konni.");
+				break;
+			default:
+				chw->setText("Cannot refresh games: " + std::string(e.what()));
+			}
+			state.displayMutex = false;
+		} catch (std::exception &e) {
+			std::cerr << e.what() << std::endl;
+			lockMutex(state.displayMutex);
+			chw->setText("Cannot refresh games: " + std::string(e.what()));
+			state.displayMutex = false;
+		}
+	};
+
+	if (state.stateUpdateThread.joinable())
+		state.stateUpdateThread.join();
+	state.stateUpdateThread = std::thread([&state, fct]{
+		fct();
+		state.countdown.restart();
 	});
 }
 
@@ -752,7 +1018,7 @@ void hookGuiHandlers(State &state)
 			try {
 				loadChallongeTournament(state, edit->getText());
 				w.lock()->close();
-			} catch (ChallongeAPI::HTTPErrorException &e) {
+			} catch (HTTPErrorException &e) {
 				auto res = e.getResponse();
 				std::string msg = e.what();
 
@@ -763,10 +1029,10 @@ void hookGuiHandlers(State &state)
 				else if (res.returnCode / 100 == 5)
 					msg += "\n\nPlease try again later.";
 				else {
-					std::cerr << ChallongeAPI::Socket::generateHttpRequest(res.request) << std::endl;
+					std::cerr << Socket::generateHttpRequest(res.request) << std::endl;
 					msg += "\n\nPlease report this to the developer.";
 				}
-				std::cerr << ChallongeAPI::Socket::generateHttpResponse(res) << std::endl;
+				std::cerr << Socket::generateHttpResponse(res) << std::endl;
 				openMsgBox(state, Utils::getLastExceptionName(), msg, MB_ICONERROR);
 			} catch (std::exception &e) {
 				openMsgBox(state, Utils::getLastExceptionName(), e.what(), MB_ICONERROR);
@@ -826,6 +1092,8 @@ int main()
 			.robbin                = {},
 			.roundBounds           = {INT32_MAX, INT32_MIN}
 		},
+		.displayMutex                  = false,
+		.updateMutex                   = false,
 		.client                        = {USERNAME, APIKEY},
 		.defaultTexture                = {},
 		.images                        = {}
@@ -842,16 +1110,17 @@ int main()
 		int remain = state.settings.refreshRate - t;
 
 		handleEvents(state);
-		if (remain <= 0)
+
+		if (remain <= 0) {
+			if (refresh->getText() != "Refreshing...")
+				refreshView(state);
 			refresh->setText("Refreshing...");
-		else
+		} else
 			refresh->setText("Refreshing in " + std::to_string(remain) + " second" + (remain >= 2 ? "s" : ""));
 
-		if (t >= state.settings.refreshRate)
-			refreshView(state);
 		if (!state.displayMutex) {
+			state.displayMutex = true;
 			state.win.clear(sf::Color::White);
-			lockMutex(state.displayMutex);
 			state.gui.draw();
 			state.displayMutex = false;
 		}
