@@ -670,7 +670,7 @@ void connectToWebsocket(ChallongeWSock &wsock)
 inline void addMatchToBracket(const std::shared_ptr<Match> &match, Bracket &bracket)
 {
 	bracket.elim[match->getRound()].push_back(match);
-	if (match->getRound() < 0)
+	if (match->getRound() <= 0)
 		return;
 	while (bracket.robbin.size() < match->getRound())
 		bracket.robbin.emplace_back();
@@ -828,6 +828,11 @@ void loadChallongeTournament(State &state, std::string url, bool noObjectRefresh
 	state.updateBracketThread = std::thread(fct);
 }
 
+//TODO: Fix order when hosting
+//TODO: Custom round names
+//TODO: Save/Load settings
+//TODO: Add state "was hosting"
+//TODO: SokuStreaming: Add round name
 bool konniHostIsChallongeMatch(State &state, const Match &match, const KonniMatch &host)
 {
 	auto hostP   = state.ChallongeUNameToParticipant[host.hostChallonge]   ?: state.participants[state.discordHostToParticipant[host.hostName]];
@@ -835,7 +840,7 @@ bool konniHostIsChallongeMatch(State &state, const Match &match, const KonniMatc
 	auto p1      = state.participants[*match.getPlayer1Id()];
 	auto p2      = state.participants[*match.getPlayer2Id()];
 
-	return p1 == hostP && (!host.gameStarted || p2 == clientP);
+	return (p1 == hostP || p2 == hostP) && (!host.gameStarted || p1 == clientP || p2 == clientP || host.clientChallonge.empty());
 }
 
 bool matchKonniHostWithChallongeMatch(State &state, const Match &match, const KonniMatch &host, const std::map<size_t, KonniMatch> &old)
@@ -873,16 +878,24 @@ bool matchKonniHostWithChallongeMatchInBracket(State &state, const Bracket &brac
 void matchKonniHostsWithChallongeMatch(State &state, const std::vector<KonniMatch> &hosts)
 {
 	auto oldStates = state.matchesStates;
+	bool v = false;
 
 	state.matchesStates.clear();
 	if (state.bracket.elim.empty() && state.bracket.robbin.empty()) {
-		for (auto &host : hosts)
-			for (auto &bracket : state.group)
-				if (matchKonniHostWithChallongeMatchInBracket(state, bracket.second, host, oldStates))
+		for (auto &host : hosts) {
+			v = false;
+			for (auto &bracket : state.group) {
+				v |= matchKonniHostWithChallongeMatchInBracket(state, bracket.second, host, oldStates);
+				if (v)
 					break;
+			}
+			if (!v)
+				std::cerr << "Error: Cannot find match for (group) host " << host.hostChallonge << std::endl;
+		}
 	} else
 		for (auto &host : hosts)
-			matchKonniHostWithChallongeMatchInBracket(state, state.bracket, host, oldStates);
+			if (!matchKonniHostWithChallongeMatchInBracket(state, state.bracket, host, oldStates))
+				std::cerr << "Error: Cannot find match for host " << host.hostChallonge << std::endl;
 }
 
 void refreshView(State &state)
@@ -995,6 +1008,72 @@ void refreshView(State &state)
 	});
 }
 
+void openSettingsBox(State &state)
+{
+	std::shared_ptr<bool> showing = std::make_shared<bool>(false);
+	auto win = Utils::openWindowWithFocus(state.gui, 410, 190);
+	auto colorChange = [&state](tgui::Button::Ptr button, tgui::Color &col){
+		Utils::makeColorPickWindow(state.gui, [button, &col](tgui::Color color){
+			button->getRenderer()->setBackgroundColor(color);
+			col = color;
+		}, button->getRenderer()->getBackgroundColor());
+	};
+
+	win->loadWidgetsFromFile("gui/settings.gui");
+
+	auto useChallongeUsernames = win->get<tgui::CheckBox>("UseChallongeUsernames");
+	auto refreshRate = win->get<tgui::Slider>("RefreshRate");
+	auto name = win->get<tgui::EditBox>("Name");
+	auto apiKey = win->get<tgui::EditBox>("APIKey");
+	auto url = win->get<tgui::EditBox>("URL");
+	auto notStarted = win->get<tgui::Button>("NotStarted");
+	auto hosted = win->get<tgui::Button>("Hosted");
+	auto playing = win->get<tgui::Button>("Playing");
+	auto winner = win->get<tgui::Button>("Winner");
+	auto loser = win->get<tgui::Button>("Loser");
+	auto show = win->get<tgui::BitmapButton>("show");
+	auto label = win->get<tgui::Label>("RefreshLabel");
+
+	useChallongeUsernames->connect("Changed", [&state](bool val){
+		state.settings.useChallongeUsernames = val;
+	});
+	refreshRate->connect("ValueChanged", [&state, label](float v){
+		state.settings.refreshRate = v;
+		label->setText("Refresh rate: " + std::to_string(static_cast<int>(state.settings.refreshRate)));
+	});
+	name->connect("TextChanged", [&state](std::string val){
+		state.settings.username = val;
+		state.client.setCredentials(state.settings.username, state.settings.apikey);
+	});
+	apiKey->connect("TextChanged", [&state](std::string val){
+		state.settings.apikey = val;
+		state.client.setCredentials(state.settings.username, state.settings.apikey);
+	});
+	url->connect("TextChanged", [&state](std::string val){
+		try {
+			state.settings.ssport = std::stoul(val.substr(val.find(':') + 1));
+			state.settings.sshost = val.substr(0, val.find(':'));
+		} catch (...) {}
+	});
+	notStarted->connect("Clicked", colorChange, notStarted, std::ref(state.settings.noStartedColor));
+	hosted->connect("Clicked", colorChange, hosted, std::ref(state.settings.hostingColor));
+	playing->connect("Clicked", colorChange, playing, std::ref(state.settings.playingColor));
+	winner->connect("Clicked", colorChange, winner, std::ref(state.settings.winnerColor));
+	loser->connect("Clicked", colorChange, loser, std::ref(state.settings.loserColor));
+	useChallongeUsernames->setChecked(state.settings.useChallongeUsernames);
+	refreshRate->setValue(state.settings.refreshRate);
+	name->setText(state.settings.username);
+	apiKey->setText(state.settings.apikey);
+	url->setText(state.settings.sshost + ":" + std::to_string(state.settings.ssport));
+	notStarted->getRenderer()->setBackgroundColor(state.settings.noStartedColor);
+	hosted->getRenderer()->setBackgroundColor(state.settings.hostingColor);
+	playing->getRenderer()->setBackgroundColor(state.settings.playingColor);
+	winner->getRenderer()->setBackgroundColor(state.settings.winnerColor);
+	loser->getRenderer()->setBackgroundColor(state.settings.loserColor);
+	label->setText("Refresh rate: " + std::to_string(static_cast<int>(state.settings.refreshRate)));
+	show->setImage("icons/unvisible.png");
+}
+
 void hookGuiHandlers(State &state)
 {
 	auto menu = state.gui.get<tgui::MenuBar>("MenuBar");
@@ -1002,6 +1081,7 @@ void hookGuiHandlers(State &state)
 	menu->connect("Focused", [](std::weak_ptr<tgui::MenuBar> menu){
 		menu.lock()->moveToFront();
 	}, std::weak_ptr<tgui::MenuBar>(menu));
+	menu->connectMenuItem({"Edit", "Settings"}, openSettingsBox, std::ref(state));
 	menu->connectMenuItem({"Tournament", "Open Challonge tournament"}, [&state]{
 		auto win = Utils::openWindowWithFocus(state.gui, 300, 40);
 		auto open = tgui::Button::create("Open");
