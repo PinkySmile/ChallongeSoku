@@ -286,6 +286,27 @@ sf::Texture &getTexture(State &state, const std::string &link)
 	}
 }
 
+std::string generatesRoundName(State &state, const Bracket &bracket, int roundNumber)
+{
+	std::string front = (roundNumber < 0 ? "l" : "");
+	std::string realId = front + std::to_string(std::abs(roundNumber));
+	std::string altId = front + std::to_string(std::abs(roundNumber) - std::abs(roundNumber < 0 ? bracket.roundBounds.first : bracket.roundBounds.second) - 1);
+	auto realIt = state.settings.roundNames.find(realId);
+	auto altIt = state.settings.roundNames.find(altId);
+
+	if (altIt != state.settings.roundNames.end())
+		return altIt->second;
+	if (realIt != state.settings.roundNames.end())
+		return realIt->second;
+
+	auto v = state.settings.roundNames[front + "round"];
+	auto pos = v.find("{}");
+
+	if (pos == std::string::npos)
+		return v;
+	return v.replace(pos, pos + 2, std::to_string(std::abs(roundNumber)));
+}
+
 void updateMatchSidePanel(State &state, tgui::Panel::Ptr pan, const Match &match, bool player1)
 {
 	auto &scores = match.getScores();
@@ -339,6 +360,101 @@ void updateMatchSidePanel(State &state, tgui::Panel::Ptr pan, const Match &match
 	state.displayMutex = false;
 }
 
+void updateMatchPanel(State &state, const Bracket &bracket, const Match &match, tgui::Panel::Ptr panel)
+{
+	auto pan = state.gui.get<tgui::Panel>("Match" + std::to_string(match.getId()));
+	auto top = pan->get<tgui::Panel>("TopPanel");
+	auto bot = pan->get<tgui::Panel>("BottomPanel");
+	auto but = pan->get<tgui::Button>("JoinButton");
+	tgui::Color color = state.settings.noStartedColor;
+	auto it = state.matchesStates.find(match.getId());
+
+	if (it != state.matchesStates.end()) {
+		auto &host = it->second;
+
+		color = host.gameStarted ? state.settings.playingColor : state.settings.hostingColor;
+		but->disconnectAll("Clicked");
+		but->connect("Clicked", [&bracket, &match, host, &state]{
+			Socket sock;
+			Socket::HttpRequest requ;
+			auto player1Id = match.getPlayer1Id();
+			auto player2Id = match.getPlayer2Id();
+			auto participant1 = player1Id ? state.participants[*player1Id] : std::optional<std::shared_ptr<Participant>>{};
+			auto participant2 = player2Id ? state.participants[*player2Id] : std::optional<std::shared_ptr<Participant>>{};
+			auto roundName = generatesRoundName(state, bracket, match.getRound());
+
+			if (!participant1 || !participant2)
+				return openMsgBox(
+					state,
+					"Connect error",
+					"Cannot connect to a match that doesn't have 2 participants.\nThis is a bug. Please report this to the tool developer.",
+					MB_ICONERROR
+				);
+
+			requ.portno = state.settings.ssport;
+			requ.host = state.settings.sshost;
+			requ.httpVer = "HTTP/1.1";
+			requ.method = "POST";
+			requ.path = "/state";
+
+			requ.body.reserve(
+				strlen(R"({"left":{"name":"","score":0},{"right":{"name":"","score":0},"round":""})") +
+				(*participant1)->getDisplayName().size() + (*participant2)->getDisplayName().size() +
+				roundName.size()
+			);
+			requ.body += R"({"left":{"score":0,"name":")";
+			requ.body += (*participant1)->getDisplayName();
+			requ.body += R"("},"right":{"score":0,"name":")";
+			requ.body += (*participant2)->getDisplayName();
+			requ.body += R"("},"round":")";
+			requ.body += roundName;
+			requ.body += R"("})";
+
+			try {
+				sock.makeHttpRequest(requ);
+			} catch (std::exception &e) {
+				openMsgBox(state, "State error", "Cannot set state: " + std::string(e.what()) + "\nThis is a bug. Please report this to the tool developer.", MB_ICONERROR);
+				std::cerr << Socket::generateHttpRequest(requ) << std::endl;
+				std::cerr << Utils::getLastExceptionName() << std::endl;
+				std::cerr << "\t" << e.what() << std::endl;
+				return;
+			}
+
+			requ.path = "/connect";
+			requ.body.reserve(strlen(R"({"ip":"","port":65535,"spec":true})") + host.ip.size());
+			requ.body = R"({"ip":")";
+			requ.body += host.ip;
+			requ.body += R"(","port":)";
+			requ.body += std::to_string(host.port);
+			requ.body += R"(,"spec":true})";
+
+			try {
+				sock.makeHttpRequest(requ);
+			} catch (HTTPErrorException &e) {
+				if (e.getResponse().returnCode == 503) {
+					openMsgBox(state, "Connect error", "Cannot connect to host: " + std::string(e.what()) + "\nPlease stop connecting/hosting before trying to connect.", MB_ICONERROR);
+					return;
+				}
+				openMsgBox(state, "Connect error", "Cannot connect to host: " + std::string(e.what()) + "\nThis is a bug. Please report this to the tool developer.", MB_ICONERROR);
+				std::cerr << Socket::generateHttpRequest(requ) << std::endl;
+				std::cerr << Utils::getLastExceptionName() << std::endl;
+				std::cerr << "\t" << e.what() << std::endl;
+			} catch (std::exception &e) {
+				openMsgBox(state, "Connect error", "Cannot connect to host: " + std::string(e.what()) + "\nThis is a bug. Please report this to the tool developer.", MB_ICONERROR);
+				std::cerr << Socket::generateHttpRequest(requ) << std::endl;
+				std::cerr << Utils::getLastExceptionName() << std::endl;
+				std::cerr << "\t" << e.what() << std::endl;
+			}
+		});
+		but->setEnabled(true);
+	} else
+		but->setEnabled(false);
+	updateMatchSidePanel(state, top, match, true);
+	updateMatchSidePanel(state, bot, match, false);
+	lockMutex(state.displayMutex);
+	pan->getRenderer()->setBackgroundColor(color);
+	state.displayMutex = false;
+}
 void updateBracketState(State &state, bool hasThread = true)
 {
 	lockMutex(state.updateMutex);
@@ -347,96 +463,13 @@ void updateBracketState(State &state, bool hasThread = true)
 
 	auto panel = state.gui.get<tgui::Panel>("Bracket");
 	auto fct = [&state, panel]{
-		for (auto &match : state.matches) {
-			auto pan = state.gui.get<tgui::Panel>("Match" + std::to_string(match.first));
-			auto top = pan->get<tgui::Panel>("TopPanel");
-			auto bot = pan->get<tgui::Panel>("BottomPanel");
-			auto but = pan->get<tgui::Button>("JoinButton");
-			tgui::Color color = state.settings.noStartedColor;
-			auto it = state.matchesStates.find(match.second->getId());
-
-			if (it != state.matchesStates.end()) {
-				auto &host = it->second;
-
-				color = host.gameStarted ? state.settings.playingColor : state.settings.hostingColor;
-				but->disconnectAll("Clicked");
-				but->connect("Clicked", [match, host, &state]{
-					Socket sock;
-					Socket::HttpRequest requ;
-					auto player1Id = match.second->getPlayer1Id();
-					auto player2Id = match.second->getPlayer2Id();
-					auto participant1 = player1Id ? state.participants[*player1Id] : std::optional<std::shared_ptr<Participant>>{};
-					auto participant2 = player2Id ? state.participants[*player2Id] : std::optional<std::shared_ptr<Participant>>{};
-
-					if (!participant1 || !participant2)
-						return openMsgBox(
-							state,
-							"Connect error",
-							"Cannot connect to a match that doesn't have 2 participants.\nThis is a bug. Please report this to the tool developer.",
-							MB_ICONERROR
-						);
-
-					requ.portno = state.settings.ssport;
-					requ.host = state.settings.sshost;
-					requ.httpVer = "HTTP/1.1";
-					requ.method = "POST";
-					requ.path = "/state";
-
-					requ.body.reserve(
-						strlen(R"({"left":{"name":"","score":0},{"right":{"name":"","score":0}})") +
-						(*participant1)->getDisplayName().size() + (*participant2)->getDisplayName().size()
-					);
-					requ.body += R"({"left":{"score":0,"name":")";
-					requ.body += (*participant1)->getDisplayName();
-					requ.body += R"("},"right":{"score":0,"name":")";
-					requ.body += (*participant2)->getDisplayName();
-					requ.body += R"("}})";
-
-					try {
-						sock.makeHttpRequest(requ);
-					} catch (std::exception &e) {
-						openMsgBox(state, "State error", "Cannot set state: " + std::string(e.what()) + "\nThis is a bug. Please report this to the tool developer.", MB_ICONERROR);
-						std::cerr << Socket::generateHttpRequest(requ) << std::endl;
-						std::cerr << Utils::getLastExceptionName() << std::endl;
-						std::cerr << "\t" << e.what() << std::endl;
-						return;
-					}
-
-					requ.path = "/connect";
-					requ.body.reserve(strlen(R"({"ip":"","port":65535,"spec":true})") + host.ip.size());
-					requ.body = R"({"ip":")";
-					requ.body += host.ip;
-					requ.body += R"(","port":)";
-					requ.body += std::to_string(host.port);
-					requ.body += R"(,"spec":true})";
-
-					try {
-						sock.makeHttpRequest(requ);
-					} catch (HTTPErrorException &e) {
-						if (e.getResponse().returnCode == 503) {
-							openMsgBox(state, "Connect error", "Cannot connect to host: " + std::string(e.what()) + "\nPlease stop connecting/hosting before trying to connect.", MB_ICONERROR);
-							return;
-						}
-						openMsgBox(state, "Connect error", "Cannot connect to host: " + std::string(e.what()) + "\nThis is a bug. Please report this to the tool developer.", MB_ICONERROR);
-						std::cerr << Socket::generateHttpRequest(requ) << std::endl;
-						std::cerr << Utils::getLastExceptionName() << std::endl;
-						std::cerr << "\t" << e.what() << std::endl;
-					} catch (std::exception &e) {
-						openMsgBox(state, "Connect error", "Cannot connect to host: " + std::string(e.what()) + "\nThis is a bug. Please report this to the tool developer.", MB_ICONERROR);
-						std::cerr << Socket::generateHttpRequest(requ) << std::endl;
-						std::cerr << Utils::getLastExceptionName() << std::endl;
-						std::cerr << "\t" << e.what() << std::endl;
-					}
-				});
-				but->setEnabled(true);
-			} else
-				but->setEnabled(false);
-			updateMatchSidePanel(state, top, *match.second, true);
-			updateMatchSidePanel(state, bot, *match.second, false);
-			lockMutex(state.displayMutex);
-			pan->getRenderer()->setBackgroundColor(color);
-			state.displayMutex = false;
-		}
+		for (auto &bracket : state.group)
+			for (auto &round : bracket.second.elim)
+				for (auto &match : round.second)
+					updateMatchPanel(state, bracket.second, *match, panel);
+		for (auto &round : state.bracket.elim)
+			for (auto &match : round.second)
+				updateMatchPanel(state, state.bracket, *match, panel);
 		state.updateMutex = false;
 	};
 
@@ -465,16 +498,17 @@ tgui::Panel::Ptr addMatch(const Match &match, tgui::Layout2d pos, tgui::Panel::P
 	return pan;
 }
 
-void buildRoundRobbinBracket(const RobinBracket &bracket, const tgui::Panel::Ptr &panel)
+void buildRoundRobbinBracket(State &state, const Bracket &br, const tgui::Panel::Ptr &panel)
 {
 	sf::Vector2u size = {0, 0};
 	size_t lastSize = 0;
 	tgui::Vector2f pos {10, 10};
 	std::string id = "A";
+	const RobinBracket &bracket = br.robbin;
 
 	std::cout << "Building round robbin bracket" << std::endl;
 	for (size_t round = 0; round < bracket.size(); round++) {
-		auto lab = tgui::Label::create("Round " + std::to_string(round + 1));
+		auto lab = tgui::Label::create(generatesRoundName(state, br, round + 1));
 
 		pos.y = 10;
 		lab->setSize(200, 20);
@@ -498,7 +532,7 @@ void buildRoundRobbinBracket(const RobinBracket &bracket, const tgui::Panel::Ptr
 	panel->getRenderer()->setBackgroundColor("#999999");
 }
 
-void buildSimpleElimBracket(const ElimBracket &bracket, const tgui::Panel::Ptr &panel)
+void buildSimpleElimBracket(State &state, const Bracket &br, const ElimBracket &bracket, const tgui::Panel::Ptr &panel)
 {
 	sf::Vector2u size = {0, 0};
 	size_t biggest = 0;
@@ -507,7 +541,7 @@ void buildSimpleElimBracket(const ElimBracket &bracket, const tgui::Panel::Ptr &
 		biggest = std::max(biggest, matches.second.size());
 	size.y = biggest * 60 + 20;
 	for (auto &matches : bracket) {
-		auto lab = tgui::Label::create("Round " + std::to_string(matches.first));
+		auto lab = tgui::Label::create(generatesRoundName(state, br, matches.first));
 		tgui::Vector2f pos;
 		size_t step = 60;
 
@@ -548,8 +582,9 @@ void buildSimpleElimBracket(const ElimBracket &bracket, const tgui::Panel::Ptr &
 	panel->setSize(size.x, size.y);
 }
 
-void buildDoubleElimBracket(const ElimBracket &bracket, const tgui::Panel::Ptr &pan)
+void buildDoubleElimBracket(State &state, const Bracket &br, const tgui::Panel::Ptr &pan)
 {
+	const ElimBracket &bracket = br.elim;
 	ElimBracket loser;
 	ElimBracket winner;
 	auto loserPanel = tgui::Panel::create();
@@ -558,8 +593,8 @@ void buildDoubleElimBracket(const ElimBracket &bracket, const tgui::Panel::Ptr &
 	for (auto &matches : bracket)
 		(matches.first < 0 ? loser : winner)[matches.first] = matches.second;
 
-	buildSimpleElimBracket(winner, winnerPanel);
-	buildSimpleElimBracket(loser, loserPanel);
+	buildSimpleElimBracket(state, br, winner, winnerPanel);
+	buildSimpleElimBracket(state, br, loser, loserPanel);
 	loserPanel->setPosition(0, "winnerBracket.h");
 	loserPanel->getRenderer()->setBackgroundColor("#888888");
 	winnerPanel->setPosition(0, 0);
@@ -572,18 +607,18 @@ void buildDoubleElimBracket(const ElimBracket &bracket, const tgui::Panel::Ptr &
 	);
 }
 
-inline void buildBracket(const Bracket &bracket, const tgui::Panel::Ptr &pan)
+inline void buildBracket(State &state, const Bracket &bracket, const tgui::Panel::Ptr &pan)
 {
 	std::cout << "Building bracket of type " << bracket.type << std::endl;
 	if (bracket.type == "double elimination")
-		buildDoubleElimBracket(bracket.elim, pan);
+		buildDoubleElimBracket(state, bracket, pan);
 	else if (bracket.type == "single elimination")
-		buildSimpleElimBracket(bracket.elim, pan);
+		buildSimpleElimBracket(state, bracket, bracket.elim, pan);
 	else
-		buildRoundRobbinBracket(bracket.robbin, pan);
+		buildRoundRobbinBracket(state, bracket, pan);
 }
 
-void buildGroupBrackets(const Pool &pools, const tgui::Panel::Ptr &pan)
+void buildGroupBrackets(State &state, const Pool &pools, const tgui::Panel::Ptr &pan)
 {
 	char labText[] = "Pool A";
 	char labName[] = "LabelPool@";
@@ -614,7 +649,7 @@ void buildGroupBrackets(const Pool &pools, const tgui::Panel::Ptr &pan)
 		pan->add(label, labName);
 		pan->add(panel, labName + strlen("Label"));
 
-		buildBracket(pool.second, panel);
+		buildBracket(state, pool.second, panel);
 		panel->setPosition(0, pos);
 		label->setSize(finalX + strlen("10 + Pool@.x + "), 20);
 
@@ -635,8 +670,8 @@ void buildBracketTree(State &state)
 	lockMutex(state.displayMutex);
 	panel->removeAllWidgets();
 	state.displayMutex = false;
-	buildGroupBrackets(state.group, groupPanel);
-	buildBracket(state.bracket, bracketPanel);
+	buildGroupBrackets(state, state.group, groupPanel);
+	buildBracket(state, state.bracket, bracketPanel);
 	groupPanel->setPosition(0, 0);
 	bracketPanel->setPosition("groupPanel.w", 0);
 	lockMutex(state.displayMutex);
@@ -669,6 +704,8 @@ void connectToWebsocket(ChallongeWSock &wsock)
 
 inline void addMatchToBracket(const std::shared_ptr<Match> &match, Bracket &bracket)
 {
+	bracket.roundBounds.first = std::min(match->getRound(), bracket.roundBounds.first);
+	bracket.roundBounds.second = std::max(match->getRound(), bracket.roundBounds.second);
 	bracket.elim[match->getRound()].push_back(match);
 	if (match->getRound() <= 0)
 		return;
@@ -825,14 +862,34 @@ void loadChallongeTournament(State &state, std::string url, bool noObjectRefresh
 
 	if (state.updateBracketThread.joinable())
 		state.updateBracketThread.join();
-	state.updateBracketThread = std::thread(fct);
+	state.updateBracketThread = std::thread([&state, fct]{
+		try {
+			fct();
+		} catch (HTTPErrorException &e) {
+			auto res = e.getResponse();
+			std::string msg = e.what();
+
+			if (res.returnCode == 401)
+				msg += "\n\nPlease check your credentials.";
+			else if (res.returnCode == 404)
+				msg += "\n\nPlease check the URL.";
+			else if (res.returnCode / 100 == 5)
+				msg += "\n\nPlease try again later.";
+			else {
+				std::cerr << Socket::generateHttpRequest(res.request) << std::endl;
+				msg += "\n\nPlease report this to the developer.";
+			}
+			std::cerr << Socket::generateHttpResponse(res) << std::endl;
+			openMsgBox(state, Utils::getLastExceptionName(), msg, MB_ICONERROR);
+		} catch (std::exception &e) {
+			openMsgBox(state, Utils::getLastExceptionName(), e.what(), MB_ICONERROR);
+		}
+	});
 }
 
 //TODO: Fix order when hosting
-//TODO: Custom round names
 //TODO: Save/Load settings
 //TODO: Add state "was hosting"
-//TODO: SokuStreaming: Add round name
 bool konniHostIsChallongeMatch(State &state, const Match &match, const KonniMatch &host)
 {
 	auto hostP   = state.ChallongeUNameToParticipant[host.hostChallonge]   ?: state.participants[state.discordHostToParticipant[host.hostName]];
@@ -1095,28 +1152,8 @@ void hookGuiHandlers(State &state)
 		open->connect("Clicked", [edit, &state](std::weak_ptr<tgui::ChildWindow> w){
 			if (edit->getText().isEmpty())
 				return;
-			try {
-				loadChallongeTournament(state, edit->getText());
-				w.lock()->close();
-			} catch (HTTPErrorException &e) {
-				auto res = e.getResponse();
-				std::string msg = e.what();
-
-				if (res.returnCode == 401)
-					msg += "\n\nPlease check your credentials.";
-				else if (res.returnCode == 404)
-					msg += "\n\nPlease check the URL.";
-				else if (res.returnCode / 100 == 5)
-					msg += "\n\nPlease try again later.";
-				else {
-					std::cerr << Socket::generateHttpRequest(res.request) << std::endl;
-					msg += "\n\nPlease report this to the developer.";
-				}
-				std::cerr << Socket::generateHttpResponse(res) << std::endl;
-				openMsgBox(state, Utils::getLastExceptionName(), msg, MB_ICONERROR);
-			} catch (std::exception &e) {
-				openMsgBox(state, Utils::getLastExceptionName(), e.what(), MB_ICONERROR);
-			}
+			loadChallongeTournament(state, edit->getText());
+			w.lock()->close();
 		}, std::weak_ptr(win));
 		win->add(open, "open");
 		win->add(edit);
@@ -1155,9 +1192,9 @@ int main()
 				{"-1", "Grand final"},
 				{"-2", "Final"},
 				{"-3", "Demi-final"},
-				{"lround", "Looser round {}"},
-				{"l-2", "Looser demi-final"},
-				{"l-3", "Looser final"},
+				{"lround", "Loser round {}"},
+				{"l-2", "Loser demi-final"},
+				{"l-1", "Loser final"},
 			}
 		},
 		.currentTournament             = {},
