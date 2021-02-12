@@ -12,6 +12,7 @@
 #undef private
 #include <JsonUtils.hpp>
 #include <Client.hpp>
+#include <fstream>
 #include "SecuredWebSocket.hpp"
 #include "Utils.hpp"
 
@@ -43,6 +44,7 @@ struct KonniMatch {
 	unsigned spectators;
 	time_t start;
 	bool gameStarted;
+	bool expired = false;
 
 	KonniMatch() = default;
 	KonniMatch(const nlohmann::json &value) {
@@ -90,7 +92,73 @@ struct Settings {
 	tgui::Color playingColor;
 	tgui::Color winnerColor;
 	tgui::Color loserColor;
+	tgui::Color wasHostingColor;
 	std::map<std::string, std::string> roundNames;
+
+	~Settings() {
+		this->save();
+	}
+
+	void save()
+	{
+		std::ofstream file{"settings.json"};
+		auto serializeColor = [](const tgui::Color &color){
+			return nlohmann::json{
+				{"r", color.getRed()},
+				{"g", color.getGreen()},
+				{"b", color.getBlue()},
+			};
+		};
+		nlohmann::json value{
+			{ "apikey",                this->apikey },
+			{ "username",              this->username },
+			{ "sshost",                this->sshost },
+			{ "ssport",                this->ssport },
+			{ "refreshRate",           this->refreshRate },
+			{ "useChallongeUsernames", this->useChallongeUsernames },
+			{ "noStartedColor",        serializeColor(this->noStartedColor) },
+			{ "hostingColor",          serializeColor(this->hostingColor) },
+			{ "playingColor",          serializeColor(this->playingColor) },
+			{ "winnerColor",           serializeColor(this->winnerColor) },
+			{ "loserColor",            serializeColor(this->loserColor) },
+			{ "wasHostingColor",       serializeColor(this->wasHostingColor) },
+			{ "roundNames",            this->roundNames }
+		};
+
+		file << value.dump(4) << std::endl;
+	}
+
+	void loadSaved()
+	{
+		std::ifstream file{"settings.json"};
+
+		if (file.fail())
+			return;
+
+		auto unserializeColor = [](nlohmann::json &color){
+			return tgui::Color{
+				color["r"],
+				color["g"],
+				color["b"]
+			};
+		};
+		nlohmann::json value;
+
+		file >> value;
+		this->apikey                = value["apikey"];
+		this->username              = value["username"];
+		this->sshost                = value["sshost"];
+		this->ssport                = value["ssport"];
+		this->refreshRate           = value["refreshRate"];
+		this->useChallongeUsernames = value["useChallongeUsernames"];
+		this->noStartedColor        = unserializeColor(value["noStartedColor"]);
+		this->hostingColor          = unserializeColor(value["hostingColor"]);
+		this->playingColor          = unserializeColor(value["playingColor"]);
+		this->winnerColor           = unserializeColor(value["winnerColor"]);
+		this->loserColor            = unserializeColor(value["loserColor"]);
+		this->wasHostingColor       = unserializeColor(value["wasHostingColor"]);
+		this->roundNames            = value["roundNames"].get<std::map<std::string, std::string>>();
+	}
 };
 
 typedef std::vector<std::shared_ptr<Match>> Round;
@@ -391,6 +459,9 @@ void updateMatchPanel(State &state, const Bracket &bracket, const Match &match, 
 					MB_ICONERROR
 				);
 
+			auto leftName  = ((*participant1)->getUsername() == host.hostChallonge ? *participant1 : *participant2)->getDisplayName();
+			auto rightName = ((*participant1)->getUsername() == host.hostChallonge ? *participant2 : *participant1)->getDisplayName();
+
 			requ.portno = state.settings.ssport;
 			requ.host = state.settings.sshost;
 			requ.httpVer = "HTTP/1.1";
@@ -399,13 +470,12 @@ void updateMatchPanel(State &state, const Bracket &bracket, const Match &match, 
 
 			requ.body.reserve(
 				strlen(R"({"left":{"name":"","score":0},{"right":{"name":"","score":0},"round":""})") +
-				(*participant1)->getDisplayName().size() + (*participant2)->getDisplayName().size() +
-				roundName.size()
+				leftName.size() + rightName.size() + roundName.size()
 			);
 			requ.body += R"({"left":{"score":0,"name":")";
-			requ.body += (*participant1)->getDisplayName();
+			requ.body += leftName;
 			requ.body += R"("},"right":{"score":0,"name":")";
-			requ.body += (*participant2)->getDisplayName();
+			requ.body += rightName;
 			requ.body += R"("},"round":")";
 			requ.body += roundName;
 			requ.body += R"("})";
@@ -887,9 +957,6 @@ void loadChallongeTournament(State &state, std::string url, bool noObjectRefresh
 	});
 }
 
-//TODO: Fix order when hosting
-//TODO: Save/Load settings
-//TODO: Add state "was hosting"
 bool konniHostIsChallongeMatch(State &state, const Match &match, const KonniMatch &host)
 {
 	auto hostP   = state.ChallongeUNameToParticipant[host.hostChallonge]   ?: state.participants[state.discordHostToParticipant[host.hostName]];
@@ -906,14 +973,17 @@ bool matchKonniHostWithChallongeMatch(State &state, const Match &match, const Ko
 
 	if (match.getState() != "open")
 		return false;
-	if (it != old.end() && it->second.hostChallonge == host.hostChallonge) {
+	if (it != old.end() && it->second.hostChallonge == host.hostChallonge && !it->second.expired) {
 		state.matchesStates[match.getId()] = host;
 		return true;
 	}
-	if (!match.getPlayer1Id() && !match.getPlayer2Id())
+	if ((!match.getPlayer1Id() && !match.getPlayer2Id()) || !konniHostIsChallongeMatch(state, match, host)) {
+		if (it != old.end()) {
+			state.matchesStates[match.getId()] = host;
+			state.matchesStates[match.getId()].expired = true;
+		}
 		return false;
-	if (!konniHostIsChallongeMatch(state, match, host))
-		return false;
+	}
 
 	state.matchesStates[match.getId()] = host;
 	return true;
@@ -921,10 +991,6 @@ bool matchKonniHostWithChallongeMatch(State &state, const Match &match, const Ko
 
 bool matchKonniHostWithChallongeMatchInBracket(State &state, const Bracket &bracket, const KonniMatch &host, const std::map<size_t, KonniMatch> &old)
 {
-	for (auto &round : bracket.robbin)
-		for (auto &match : round)
-			if (matchKonniHostWithChallongeMatch(state, *match, host, old))
-				return true;
 	for (auto &round : bracket.elim)
 		for (auto &match : round.second)
 			if (matchKonniHostWithChallongeMatch(state, *match, host, old))
@@ -998,8 +1064,10 @@ void refreshView(State &state)
 			state.displayMutex = false;
 		} catch (std::exception &e) {
 			std::cerr << e.what() << std::endl;
+			lockMutex(state.displayMutex);
 			score->getRenderer()->setTextColor("red");
 			score->setText("Warning: Cannot connect to SokuStreaming: " + std::string(e.what()));
+			state.displayMutex = false;
 		}
 
 		if (state.currentTournament.empty())
@@ -1068,7 +1136,7 @@ void refreshView(State &state)
 void openSettingsBox(State &state)
 {
 	std::shared_ptr<bool> showing = std::make_shared<bool>(false);
-	auto win = Utils::openWindowWithFocus(state.gui, 410, 190);
+	auto win = Utils::openWindowWithFocus(state.gui, 410, 220);
 	auto colorChange = [&state](tgui::Button::Ptr button, tgui::Color &col){
 		Utils::makeColorPickWindow(state.gui, [button, &col](tgui::Color color){
 			button->getRenderer()->setBackgroundColor(color);
@@ -1088,6 +1156,7 @@ void openSettingsBox(State &state)
 	auto playing = win->get<tgui::Button>("Playing");
 	auto winner = win->get<tgui::Button>("Winner");
 	auto loser = win->get<tgui::Button>("Loser");
+	auto wasHosted = win->get<tgui::Button>("WasHosted");
 	auto show = win->get<tgui::BitmapButton>("show");
 	auto label = win->get<tgui::Label>("RefreshLabel");
 
@@ -1113,6 +1182,7 @@ void openSettingsBox(State &state)
 		} catch (...) {}
 	});
 	notStarted->connect("Clicked", colorChange, notStarted, std::ref(state.settings.noStartedColor));
+	wasHosted->connect("Clicked", colorChange, wasHosted, std::ref(state.settings.wasHostingColor));
 	hosted->connect("Clicked", colorChange, hosted, std::ref(state.settings.hostingColor));
 	playing->connect("Clicked", colorChange, playing, std::ref(state.settings.playingColor));
 	winner->connect("Clicked", colorChange, winner, std::ref(state.settings.winnerColor));
@@ -1122,6 +1192,7 @@ void openSettingsBox(State &state)
 	name->setText(state.settings.username);
 	apiKey->setText(state.settings.apikey);
 	url->setText(state.settings.sshost + ":" + std::to_string(state.settings.ssport));
+	wasHosted->getRenderer()->setBackgroundColor(state.settings.wasHostingColor);
 	notStarted->getRenderer()->setBackgroundColor(state.settings.noStartedColor);
 	hosted->getRenderer()->setBackgroundColor(state.settings.hostingColor);
 	playing->getRenderer()->setBackgroundColor(state.settings.playingColor);
@@ -1220,11 +1291,17 @@ int main()
 
 	auto refresh = state.gui.get<tgui::Label>("Refresh");
 
+	try {
+		state.settings.loadSaved();
+	} catch (std::exception &e) {
+		MessageBox(nullptr, (std::string("Error: Cannot load settings: ") + e.what() + "\n\nClick OK to close the application").c_str(), "Load settings failed", MB_ICONERROR);
+		return EXIT_FAILURE;
+	}
 	hookGuiHandlers(state);
 	refreshView(state);
 	while (state.win.isOpen()) {
 		auto t = state.countdown.getElapsedTime().asSeconds();
-		int remain = state.settings.refreshRate - t;
+		int remain = state.settings.refreshRate - t + 1;
 
 		handleEvents(state);
 
