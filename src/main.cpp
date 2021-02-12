@@ -440,7 +440,7 @@ void updateMatchPanel(State &state, const Bracket &bracket, const Match &match, 
 	if (it != state.matchesStates.end()) {
 		auto &host = it->second;
 
-		color = host.gameStarted ? state.settings.playingColor : state.settings.hostingColor;
+		color = host.expired ? state.settings.wasHostingColor : (host.gameStarted ? state.settings.playingColor : state.settings.hostingColor);
 		but->disconnectAll("Clicked");
 		but->connect("Clicked", [&bracket, &match, host, &state]{
 			Socket sock;
@@ -977,13 +977,10 @@ bool matchKonniHostWithChallongeMatch(State &state, const Match &match, const Ko
 		state.matchesStates[match.getId()] = host;
 		return true;
 	}
-	if ((!match.getPlayer1Id() && !match.getPlayer2Id()) || !konniHostIsChallongeMatch(state, match, host)) {
-		if (it != old.end()) {
-			state.matchesStates[match.getId()] = host;
-			state.matchesStates[match.getId()].expired = true;
-		}
+	if (!match.getPlayer1Id() && !match.getPlayer2Id())
 		return false;
-	}
+	if (!konniHostIsChallongeMatch(state, match, host))
+		return false;
 
 	state.matchesStates[match.getId()] = host;
 	return true;
@@ -1004,6 +1001,12 @@ void matchKonniHostsWithChallongeMatch(State &state, const std::vector<KonniMatc
 	bool v = false;
 
 	state.matchesStates.clear();
+	for (auto &elem : oldStates)
+		elem.second.expired = true;
+	for (auto &elem : oldStates)
+		if (state.matches[elem.first]->getState() == "open")
+			state.matchesStates.emplace(elem);
+
 	if (state.bracket.elim.empty() && state.bracket.robbin.empty()) {
 		for (auto &host : hosts) {
 			v = false;
