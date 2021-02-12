@@ -405,7 +405,7 @@ void updateMatchSidePanel(State &state, tgui::Panel::Ptr pan, const Match &match
 		if (*participant) {
 			if (texture)
 				picture->getRenderer()->setTexture(*texture);
-			username->setText((*participant)->getName());
+			username->setText((*participant)->getDisplayName());
 			username->getRenderer()->setTextColor("black");
 		} else {
 			username->setText("Invalid participant " + std::to_string(*playerId));
