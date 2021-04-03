@@ -354,8 +354,11 @@ sf::Texture &getTexture(State &state, const std::string &link)
 	}
 }
 
-std::string generatesRoundName(State &state, const Bracket &bracket, int roundNumber)
+std::string generatesRoundName(State &state, const Bracket &bracket, int roundNumber, bool isGroup = false)
 {
+	if (isGroup)
+		return state.settings.roundNames.at("pool");
+
 	std::string front = (roundNumber < 0 ? "l" : "");
 	std::string realId = front + std::to_string(std::abs(roundNumber));
 	std::string altId = front + std::to_string(std::abs(roundNumber) - std::abs(roundNumber < 0 ? bracket.roundBounds.first : bracket.roundBounds.second) - 1);
@@ -428,7 +431,7 @@ void updateMatchSidePanel(State &state, tgui::Panel::Ptr pan, const Match &match
 	state.displayMutex = false;
 }
 
-void updateMatchPanel(State &state, const Bracket &bracket, const Match &match, tgui::Panel::Ptr panel)
+void updateMatchPanel(State &state, const Bracket &bracket, const Match &match, tgui::Panel::Ptr panel, bool isGroup)
 {
 	auto pan = state.gui.get<tgui::Panel>("Match" + std::to_string(match.getId()));
 	auto top = pan->get<tgui::Panel>("TopPanel");
@@ -442,14 +445,14 @@ void updateMatchPanel(State &state, const Bracket &bracket, const Match &match, 
 
 		color = host.expired ? state.settings.wasHostingColor : (host.gameStarted ? state.settings.playingColor : state.settings.hostingColor);
 		but->disconnectAll("Clicked");
-		but->connect("Clicked", [&bracket, &match, host, &state]{
+		but->connect("Clicked", [&bracket, &match, host, &state, isGroup]{
 			Socket sock;
 			Socket::HttpRequest requ;
 			auto player1Id = match.getPlayer1Id();
 			auto player2Id = match.getPlayer2Id();
 			auto participant1 = player1Id ? state.participants[*player1Id] : std::optional<std::shared_ptr<Participant>>{};
 			auto participant2 = player2Id ? state.participants[*player2Id] : std::optional<std::shared_ptr<Participant>>{};
-			auto roundName = generatesRoundName(state, bracket, match.getRound());
+			auto roundName = generatesRoundName(state, bracket, match.getRound(), isGroup);
 
 			if (!participant1 || !participant2)
 				return openMsgBox(
@@ -525,6 +528,7 @@ void updateMatchPanel(State &state, const Bracket &bracket, const Match &match, 
 	pan->getRenderer()->setBackgroundColor(color);
 	state.displayMutex = false;
 }
+
 void updateBracketState(State &state, bool hasThread = true)
 {
 	lockMutex(state.updateMutex);
@@ -536,10 +540,10 @@ void updateBracketState(State &state, bool hasThread = true)
 		for (auto &bracket : state.group)
 			for (auto &round : bracket.second.elim)
 				for (auto &match : round.second)
-					updateMatchPanel(state, bracket.second, *match, panel);
+					updateMatchPanel(state, bracket.second, *match, panel, true);
 		for (auto &round : state.bracket.elim)
 			for (auto &match : round.second)
-				updateMatchPanel(state, state.bracket, *match, panel);
+				updateMatchPanel(state, state.bracket, *match, panel, false);
 		state.updateMutex = false;
 	};
 
@@ -549,6 +553,7 @@ void updateBracketState(State &state, bool hasThread = true)
 	else
 		fct();
 }
+
 //TODO: https://hisouten.challonge.com/fr/soku2020
 tgui::Panel::Ptr addMatch(const Match &match, tgui::Layout2d pos, tgui::Panel::Ptr panel)
 {
@@ -1269,6 +1274,7 @@ int main()
 				{"lround", "Loser round {}"},
 				{"l-2", "Loser demi-final"},
 				{"l-1", "Loser final"},
+				{"pool", "Pool"},
 			}
 		},
 		.currentTournament             = {},
