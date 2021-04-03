@@ -822,6 +822,72 @@ std::string getGroupStageType(State &state, const Pool &pools)
 	return "round robbin";
 }
 
+static bool disconnected = false;
+
+void webSocketLoop(State &state)
+{
+	auto score = state.gui.get<tgui::Label>("Score");
+	std::string tournamentChan = "/tournaments/" + std::to_string(state.tournament->getId());
+
+	while (true)
+		try {
+			std::string data = state.wsock.socket.getAnswer();
+			auto parsed = nlohmann::json::parse(data);
+
+			for (auto &elem : parsed) {
+				std::cout << "Received " << elem.dump(4) << std::endl;
+				std::string channel = elem["channel"];
+
+				if (channel == "/meta/subscribe" && !elem["successful"])
+					return openMsgBox(state, "Websocket error", "Cannot subscribe to tournament events:\n\n" + elem["error"].get<std::string>(), MB_ICONERROR);
+				else if (channel == "/meta/connect")
+					sendWebSocketMessage(state.wsock, "/meta/connect",{{"connectionType", "websocket"}});
+				else if (channel == tournamentChan) {
+					updateTournamentState(state, elem["data"]["TournamentStore"]);
+					updateBracketState(state);
+				}
+			}
+		} catch (ConnectionTerminatedException &e) {
+			std::cerr << "Websocket disconnected: " << e.what() << std::endl;
+			return;
+		} catch (EOFException &e) {
+			if (state.wsock.socket.isOpen()) {
+				std::cerr << "Websocket error: " << Utils::getLastExceptionName() << ": " << e.what() << std::endl;
+				//openMsgBox(state, "Websocket error: EOFException", e.what(), MB_ICONERROR);
+			}
+			return;
+		} catch (std::exception &e) {
+			std::cerr << "Websocket error: " << Utils::getLastExceptionName() << ": " << e.what() << std::endl;//openMsgBox(state, "Websocket error: " + Utils::getLastExceptionName(), e.what(), MB_ICONERROR);
+			return;
+		}
+}
+
+void connectWebSocket(State &state)
+{
+	state.wsock.socketThread = std::thread([&state]{
+		while (!state.currentTournament.empty()) {
+			try {
+				connectToWebsocket(state.wsock);
+				sendWebSocketMessage(
+					state.wsock,
+					"/meta/subscribe",
+					{
+						{"subscription", "/tournaments/" + std::to_string(state.tournament->getId())}
+					}
+				);
+				webSocketLoop(state);
+
+				try {
+					state.wsock.socket.disconnect();
+				} catch (...) {}
+			} catch (std::exception &e) {
+				std::cerr << "Websocket init error: " << Utils::getLastExceptionName() << ": " << e.what() << std::endl;
+				std::this_thread::sleep_for(std::chrono::milliseconds(500));
+			}
+		}
+	});
+}
+
 void loadChallongeTournament(State &state, std::string url, bool noObjectRefresh = false)
 {
 	state.currentTournament.clear();
@@ -848,47 +914,7 @@ void loadChallongeTournament(State &state, std::string url, bool noObjectRefresh
 				"Warning: This tournament's game is " + state.tournament->getGameName() + " but it is not supported.\nYou won't be able to use this program to connect to games.",
 				MB_ICONWARNING
 			);
-		connectToWebsocket(state.wsock);
-		sendWebSocketMessage(
-			state.wsock,
-			"/meta/subscribe",
-			{
-				{"subscription", "/tournaments/" + std::to_string(state.tournament->getId())}
-			}
-		);
-		state.wsock.socketThread = std::thread([&state]{
-			auto score = state.gui.get<tgui::Label>("Score");
-			std::string tournamentChan = "/tournaments/" + std::to_string(state.tournament->getId());
-
-			while (true)
-				try {
-					std::string data = state.wsock.socket.getAnswer();
-					auto parsed = nlohmann::json::parse(data);
-
-					for (auto &elem : parsed) {
-						std::cout << "Received " << elem.dump(4) << std::endl;
-						std::string channel = elem["channel"];
-
-						if (channel == "/meta/subscribe" && !elem["successful"])
-							return openMsgBox(state, "Websocket error", "Cannot subscribe to tournament events:\n\n" + elem["error"].get<std::string>(), MB_ICONERROR);
-						else if (channel == "/meta/connect")
-							sendWebSocketMessage(state.wsock, "/meta/connect",{{"connectionType", "websocket"}});
-						else if (channel == tournamentChan) {
-							updateTournamentState(state, elem["data"]["TournamentStore"]);
-							updateBracketState(state);
-						}
-					}
-				} catch (ConnectionTerminatedException &e) {
-					return;
-				} catch (EOFException &e) {
-					if (state.wsock.socket.isOpen())
-						openMsgBox(state, "Websocket error: EOFException", e.what(), MB_ICONERROR);
-					return;
-				} catch (std::exception &e) {
-					openMsgBox(state, "Websocket error: " + Utils::getLastExceptionName(), e.what(), MB_ICONERROR);
-					return;
-				}
-		});
+		connectWebSocket(state);
 		state.matchesStates.clear();
 		state.participants.clear();
 		state.matches.clear();
