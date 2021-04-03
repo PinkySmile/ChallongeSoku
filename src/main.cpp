@@ -758,6 +758,7 @@ void buildBracketTree(State &state)
 
 void connectToWebsocket(ChallongeWSock &wsock)
 {
+	std::cout << "Connecting websocket to challonge..." << std::endl;
 	SecuredSocket sock;
 	Socket::HttpRequest requ;
 
@@ -865,9 +866,10 @@ void webSocketLoop(State &state)
 void connectWebSocket(State &state)
 {
 	state.wsock.socketThread = std::thread([&state]{
-		while (!state.currentTournament.empty()) {
+		do {
 			try {
 				connectToWebsocket(state.wsock);
+				std::cout << "Subscribing to " << state.tournament->getId() << std::endl;
 				sendWebSocketMessage(
 					state.wsock,
 					"/meta/subscribe",
@@ -884,7 +886,7 @@ void connectWebSocket(State &state)
 				std::cerr << "Websocket init error: " << Utils::getLastExceptionName() << ": " << e.what() << std::endl;
 				std::this_thread::sleep_for(std::chrono::milliseconds(500));
 			}
-		}
+		} while (!state.currentTournament.empty());
 	});
 }
 
