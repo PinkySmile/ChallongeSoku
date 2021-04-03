@@ -1300,6 +1300,7 @@ int main()
 		MessageBox(nullptr, (std::string("Error: Cannot load settings: ") + e.what() + "\n\nClick OK to close the application").c_str(), "Load settings failed", MB_ICONERROR);
 		return EXIT_FAILURE;
 	}
+	state.client.setCredentials(state.settings.username, state.settings.apikey);
 	hookGuiHandlers(state);
 	refreshView(state);
 	while (state.win.isOpen()) {
