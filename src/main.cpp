@@ -1362,6 +1362,7 @@ int main()
 		state.stateUpdateThread.join();
 	if (state.updateBracketThread.joinable())
 		state.updateBracketThread.join();
+	state.currentTournament.clear();
 	if (state.wsock.socket.isOpen())
 		state.wsock.socket.disconnect();
 	if (state.wsock.socketThread.joinable())
